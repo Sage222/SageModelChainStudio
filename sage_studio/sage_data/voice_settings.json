@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "engine": "Kokoro (local)",
+  "voice": "af_heart",
+  "speed": 1.0,
+  "auto_play": true,
+  "last_output": "",
+  "use_gpu": true,
+  "clean_text": true
+}
