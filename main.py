@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """Sage Model Chain Studio — entry point."""
+import os
+for _dll_dir in [
+    r"C:\Users\SageDesk\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cuda_runtime\bin",
+    r"C:\Users\SageDesk\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cublas\bin",
+]:
+    if os.path.isdir(_dll_dir):
+        os.add_dll_directory(_dll_dir)
 
 import sys
 from PyQt6.QtWidgets import QApplication
