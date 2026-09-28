@@ -110,6 +110,10 @@ class ModelBrowserPanel(QGroupBox):
         self.limits_worker = None
         self._load_saved_key_for_current_scope()
 
+        self.setStyleSheet(
+            "QLineEdit, QComboBox, QPushButton { padding: 3px 8px; min-height: 16px; }"
+        )
+
     def _toggle_key_visibility(self, checked):
         self.api_key_edit.setEchoMode(
             QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password

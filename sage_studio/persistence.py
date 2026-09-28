@@ -3,7 +3,7 @@
 import os, json
 from typing import Dict
 from .constants import *
-from .models import ChatSession, FavoriteModel, LocalModel
+from .models import ChatSession, FavoriteModel, LocalModel, ImageModel
 
 from dataclasses import asdict
 
@@ -35,11 +35,11 @@ class PersistenceManager:
     def forget_key(self, scope):
         if scope in self.keys:
             del self.keys[scope]
-            try:
-                with open(KEYS_FILE, "w", encoding="utf-8") as f:
-                    json.dump(self.keys, f, indent=2)
-            except Exception:
-                pass
+        try:
+            with open(KEYS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.keys, f, indent=2)
+        except Exception:
+            pass
 
     def load_chats(self):
         if not os.path.exists(CHATS_FILE):
@@ -92,6 +92,23 @@ class PersistenceManager:
         except Exception:
             pass
 
+    def load_image_models(self):
+        if not os.path.exists(IMAGE_MODELS_FILE):
+            return []
+        try:
+            with open(IMAGE_MODELS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            return [ImageModel.from_dict(d) for d in raw]
+        except Exception:
+            return []
+
+    def save_image_models(self, models):
+        try:
+            with open(IMAGE_MODELS_FILE, "w", encoding="utf-8") as f:
+                json.dump([m.to_dict() for m in models], f, indent=2)
+        except Exception:
+            pass
+
     def load_voice_settings(self):
         defaults = {
             "enabled": False, "engine": "Kokoro (local)", "voice": "af_heart",
@@ -114,4 +131,18 @@ class PersistenceManager:
         except Exception:
             pass
 
+    def load_prompt_templates(self):
+        if not os.path.exists(PROMPT_TEMPLATES_FILE):
+            return {}
+        try:
+            with open(PROMPT_TEMPLATES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
+    def save_prompt_templates(self, templates):
+        try:
+            with open(PROMPT_TEMPLATES_FILE, "w", encoding="utf-8") as f:
+                json.dump(templates, f, indent=2)
+        except Exception:
+            pass

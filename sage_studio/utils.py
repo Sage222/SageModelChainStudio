@@ -1,3 +1,4 @@
+import subprocess
 """Sage Model Chain Studio — Utils"""
 
 import os, re, warnings
@@ -133,3 +134,75 @@ def step_display(step):
     return step.model_id
 
 
+
+
+def get_gpu_memory():
+    """Returns (used_mb, total_mb) from nvidia-smi, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        line = result.stdout.strip().splitlines()[0]
+        used_str, total_str = line.split(",")
+        return float(used_str.strip()), float(total_str.strip())
+    except Exception:
+        return None
+
+
+
+def get_gpu_utilization():
+    """Returns GPU core utilization as a percentage (0-100) from nvidia-smi,
+    or None if unavailable (no NVIDIA GPU, driver not installed, etc.)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        line = result.stdout.strip().splitlines()[0]
+        return float(line.strip())
+    except Exception:
+        return None
+
+
+def get_ram_usage():
+    """Returns (used_gb, total_gb, percent) for system RAM, or None if
+    psutil is not installed."""
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        used_gb = vm.used / (1024 ** 3)
+        total_gb = vm.total / (1024 ** 3)
+        return used_gb, total_gb, vm.percent
+    except ImportError:
+        return None
+
+def get_model_disk_size(path):
+    """Returns a human-readable on-disk size for a GGUF file or a
+    safetensors model folder. Returns '?' if the path can't be measured."""
+    try:
+        if os.path.isfile(path):
+            total_bytes = os.path.getsize(path)
+        elif os.path.isdir(path):
+            total_bytes = 0
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total_bytes += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+        else:
+            return "?"
+        gb = total_bytes / (1024 ** 3)
+        if gb >= 1:
+            return f"{gb:.1f} GB"
+        mb = total_bytes / (1024 ** 2)
+        return f"{mb:.0f} MB"
+    except Exception:
+        return "?"

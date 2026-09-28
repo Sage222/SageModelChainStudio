@@ -1,11 +1,11 @@
-"""Sage Model Chain Studio — Ui Chats Favorites"""
+"""Sage LLM Studio — Chats & Favorites panels"""
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QLabel, QMessageBox, QInputDialog, QMenu,
-    QAbstractItemView,
 )
+
 from .models import ChainStep, FavoriteModel
 from .utils import step_display, _scope_for
 from .persistence import PersistenceManager
@@ -22,7 +22,6 @@ class ChatsPanel(QGroupBox):
         self.list_widget = QListWidget()
         self.list_widget.currentItemChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget, 1)
-
         btn_row = QHBoxLayout()
         new_btn = QPushButton("+ New")
         new_btn.setObjectName("accent")
@@ -75,7 +74,8 @@ class ChatsPanel(QGroupBox):
             return
         chat_id = item.data(Qt.ItemDataRole.UserRole)
         confirm = QMessageBox.question(
-            self, "Delete chat", f"Delete '{item.text()}' and all of its history?",
+            self, "Delete chat",
+            f"Delete '{item.text()}' and all of its history?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if confirm == QMessageBox.StandardButton.Yes and self.on_delete:
@@ -83,11 +83,22 @@ class ChatsPanel(QGroupBox):
 
 
 class FavoritesPanel(QGroupBox):
-    def __init__(self, persistence, add_to_chain_callback):
+    def __init__(self, persistence, add_to_chain_callback,
+                 get_local_models_callback=None, get_chain_steps_callback=None,
+                 edit_step_callback=None, remove_step_by_model_id_callback=None):
         super().__init__("Favorites")
         self.persistence = persistence
         self.add_to_chain_callback = add_to_chain_callback
+        # Kept for backward-compatible construction (main_window.py still
+        # passes these) but no longer used -- the "Currently Loaded in
+        # Chain" section was removed as a duplicate of "Loaded Models in
+        # Chain" on the Settings tab.
+        self.get_local_models_callback = get_local_models_callback
+        self.get_chain_steps_callback = get_chain_steps_callback
+        self.edit_step_callback = edit_step_callback
+        self.remove_step_by_model_id_callback = remove_step_by_model_id_callback
         self.favorites = self.persistence.load_favorites()
+
         layout = QVBoxLayout(self)
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
@@ -98,27 +109,39 @@ class FavoritesPanel(QGroupBox):
         hint.setObjectName("sectionHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
         self._refresh_list()
+
+    def refresh_loaded_list(self):
+        """No-op kept for backward compatibility -- main_window.py calls this
+        on chat switch. The 'Currently Loaded in Chain' section it used to
+        refresh has been removed; see ChainBuilderPanel on the Settings tab
+        instead."""
+        pass
 
     def _refresh_list(self):
         self.list_widget.clear()
         for fav in self.favorites:
-            item = QListWidgetItem(f"\u2605 {fav.display_name}  ({fav.provider_label})")
+            item = QListWidgetItem(f"\u2605 {fav.display_name} ({fav.provider_label})")
             item.setData(Qt.ItemDataRole.UserRole, fav)
             self.list_widget.addItem(item)
 
     def add_favorite(self, fav):
         for existing in self.favorites:
-            if existing.provider_label == fav.provider_label and existing.base_url == fav.base_url and existing.model_id == fav.model_id:
+            if (existing.provider_label == fav.provider_label
+                    and existing.base_url == fav.base_url
+                    and existing.model_id == fav.model_id):
                 return
         self.favorites.append(fav)
         self.persistence.save_favorites(self.favorites)
         self._refresh_list()
 
-    def _remove_favorite(self, fav):
+    def remove_favorite(self, fav):
         self.favorites = [
             f for f in self.favorites
-            if not (f.provider_label == fav.provider_label and f.base_url == fav.base_url and f.model_id == fav.model_id)
+            if not (f.provider_label == fav.provider_label
+                    and f.base_url == fav.base_url
+                    and f.model_id == fav.model_id)
         ]
         self.persistence.save_favorites(self.favorites)
         self._refresh_list()
@@ -146,6 +169,4 @@ class FavoritesPanel(QGroupBox):
         if chosen == aa:
             self.add_to_chain_callback(self._build_step(fav))
         elif chosen == ra:
-            self._remove_favorite(fav)
-
-
+            self.remove_favorite(fav)

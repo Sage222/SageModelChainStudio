@@ -1,6 +1,6 @@
 """Sage Model Chain Studio — Ui Local Models"""
-
 import os
+import shutil
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
@@ -13,6 +13,7 @@ from .constants import (
 )
 from .models import LocalModel, ChainStep, FavoriteModel
 from .utils import (
+    get_model_disk_size,
     _cuda_available, llama_cpp_gpu_supported, _is_local_kind,
     unload_all_local_models,
 )
@@ -25,11 +26,17 @@ class LocalModelsPanel(QGroupBox):
         self.add_to_chain_callback = add_to_chain_callback
         self.add_to_favorites_callback = add_to_favorites_callback
         self.local_models = self.persistence.load_local_models()
+        self.on_params_saved = None
+        # Optional callback(model_display_name: str), fired right before a
+        # model is dropped from the VRAM/RAM cache (Unload All, Save
+        # Parameters reload, Remove from List, Delete from Disk). Lets the
+        # main window show a transient "Unloading <model>..." footer status.
+        self.on_model_unloading = None
         layout = QVBoxLayout(self)
 
         status_row = QHBoxLayout()
         transformers_gpu = "GPU (CUDA) available" if _cuda_available() else "CPU only"
-        self.transformers_gpu_label = QLabel(f"<b>Safetensors/torch device:</b> {transformers_gpu}")
+        self.transformers_gpu_label = QLabel(f"Safetensors/torch device: {transformers_gpu}")
         self.transformers_gpu_label.setObjectName("sectionHint")
         status_row.addWidget(self.transformers_gpu_label)
         status_row.addStretch(1)
@@ -60,20 +67,29 @@ class LocalModelsPanel(QGroupBox):
         btn_row.addWidget(unload_btn)
         layout.addLayout(btn_row)
 
+        remove_btn_row = QHBoxLayout()
+        self.remove_selected_btn = QPushButton("Remove Selected (keep file on disk)")
+        self.remove_selected_btn.clicked.connect(self._remove_selected)
+        remove_btn_row.addWidget(self.remove_selected_btn)
+        self.delete_selected_btn = QPushButton("\U0001F5D1 Delete Selected from Disk...")
+        self.delete_selected_btn.setObjectName("danger")
+        self.delete_selected_btn.clicked.connect(self._delete_selected)
+        remove_btn_row.addWidget(self.delete_selected_btn)
+        layout.addLayout(remove_btn_row)
+
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self.list_widget, 1)
 
         params_group = QGroupBox("Model Parameters (applies to selected local model)")
         params_layout = QFormLayout(params_group)
 
         self.ctx_spin = QSpinBox()
         self.ctx_spin.setRange(512, 131072)
-        self.ctx_spin.setValue(4096)
+        self.ctx_spin.setValue(16000)
         self.ctx_spin.setToolTip(
             "Maximum context window in tokens.\n"
             "Larger = more text memory but more VRAM.\n"
@@ -149,32 +165,34 @@ class LocalModelsPanel(QGroupBox):
 
         save_params_btn = QPushButton("Save Parameters to Selected Model")
         save_params_btn.clicked.connect(self._save_params)
-        params_layout.addRow(save_params_btn)
-        layout.addWidget(params_group)
+        reset_params_btn = QPushButton("Reset to Defaults")
+        reset_params_btn.clicked.connect(self._reset_params)
+        params_btn_row = QHBoxLayout()
+        params_btn_row.addWidget(save_params_btn)
+        params_btn_row.addWidget(reset_params_btn)
+        params_layout.addRow(params_btn_row)
 
-        hint = QLabel(
-            "GGUF loads to GPU VRAM via n_gpu_layers=-1, but ONLY if llama-cpp-python "
-            "was installed with a CUDA-enabled build. A plain 'pip install llama-cpp-python' "
-            "is CPU-only and will run in system RAM no matter what you set here -- click "
-            "'Check GGUF GPU Support' above to verify. Safetensors loads via device_map='cuda' "
-            "with float16 automatically when CUDA is available. Models load lazily on first use "
-            "and stay cached; click Unload to free VRAM/RAM. Double-click a model to add to chain."
-        )
-        hint.setObjectName("sectionHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        list_params_row = QHBoxLayout()
+        list_params_row.addWidget(self.list_widget, 1)
+        list_params_row.addWidget(params_group, 1)
+        layout.addLayout(list_params_row)
+
         self._refresh_list()
+
+        self.setStyleSheet(
+            "QLineEdit, QComboBox, QPushButton { padding: 3px 8px; min-height: 16px; }"
+        )
 
     def _refresh_gguf_gpu_label(self):
         installed, gpu_ok, detail = llama_cpp_gpu_supported()
         if not installed:
-            self.gguf_gpu_label.setText("<b>GGUF GPU offload:</b> llama-cpp-python not installed")
+            self.gguf_gpu_label.setText("GGUF GPU offload: llama-cpp-python not installed")
             self.gguf_gpu_label.setStyleSheet("color: #f87171;")
         elif gpu_ok:
-            self.gguf_gpu_label.setText("<b>GGUF GPU offload:</b> supported \u2705 (CUDA build detected)")
+            self.gguf_gpu_label.setText("GGUF GPU offload: supported \u2705 (CUDA build detected)")
             self.gguf_gpu_label.setStyleSheet("color: #4ade80;")
         else:
-            self.gguf_gpu_label.setText("<b>GGUF GPU offload:</b> NOT supported \u274c (CPU-only build)")
+            self.gguf_gpu_label.setText("GGUF GPU offload: NOT supported \u274c (CPU-only build)")
             self.gguf_gpu_label.setStyleSheet("color: #f87171;")
 
     def _check_gguf_gpu_support(self):
@@ -241,7 +259,7 @@ class LocalModelsPanel(QGroupBox):
         for lm in self.local_models:
             kl = "GGUF" if lm.kind == LOCAL_GGUF_KIND else "Safetensors"
             gpu_info = f" GPU layers={lm.n_gpu_layers}" if lm.kind == LOCAL_GGUF_KIND else " GPU=auto"
-            item = QListWidgetItem(f"[{kl}] {lm.display_name}  (ctx={lm.n_ctx}, temp={lm.temperature}{gpu_info})")
+            item = QListWidgetItem(f"[{kl}] {lm.display_name} (ctx={lm.n_ctx}, temp={lm.temperature}{gpu_info})")
             item.setData(Qt.ItemDataRole.UserRole, lm)
             item.setToolTip(lm.path)
             self.list_widget.addItem(item)
@@ -273,17 +291,32 @@ class LocalModelsPanel(QGroupBox):
         self.persistence.save_local_models(self.local_models)
         self._refresh_list()
         self.list_widget.setCurrentRow(self.list_widget.currentRow())
+        if lm.path in _GGUF_CACHE or lm.path in _TRANSFORMERS_CACHE:
+            if self.on_model_unloading:
+                self.on_model_unloading(lm.display_name)
         if lm.path in _GGUF_CACHE:
             del _GGUF_CACHE[lm.path]
         if lm.path in _TRANSFORMERS_CACHE:
             del _TRANSFORMERS_CACHE[lm.path]
         QMessageBox.information(self, "Saved", f"Parameters saved for {lm.display_name}.\nModel will reload with new parameters on next use.")
+        if self.on_params_saved:
+            self.on_params_saved()
+
+    def _reset_params(self):
+        self.ctx_spin.setValue(16000)
+        self.gpu_layers_spin.setValue(-1)
+        self.temp_spin.setValue(0.7)
+        self.max_tokens_spin.setValue(1024)
+        self.top_p_spin.setValue(0.9)
+        self.repeat_penalty_spin.setValue(1.1)
 
     def _unload_all(self):
         count = len(_GGUF_CACHE) + len(_TRANSFORMERS_CACHE)
         if count == 0:
             QMessageBox.information(self, "Nothing to unload", "No local models are currently loaded in VRAM/RAM.")
             return
+        if self.on_model_unloading:
+            self.on_model_unloading(f"{count} model(s)")
         cleared = unload_all_local_models()
         QMessageBox.information(self, "Unloaded", f"Cleared {len(cleared)} model(s) from VRAM/RAM:\n" + "\n".join(cleared))
 
@@ -299,6 +332,84 @@ class LocalModelsPanel(QGroupBox):
     def _on_double_click(self, item):
         self.add_to_chain_callback(self._build_step(item.data(Qt.ItemDataRole.UserRole)))
 
+    def _unload_from_cache(self, lm):
+        was_cached = lm.path in _GGUF_CACHE or lm.path in _TRANSFORMERS_CACHE
+        if was_cached and self.on_model_unloading:
+            self.on_model_unloading(lm.display_name)
+        if lm.path in _GGUF_CACHE:
+            del _GGUF_CACHE[lm.path]
+        if lm.path in _TRANSFORMERS_CACHE:
+            del _TRANSFORMERS_CACHE[lm.path]
+
+    def _selected_model(self):
+        item = self.list_widget.currentItem()
+        if not item:
+            QMessageBox.information(self, "No selection", "Select a model in the list first.")
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _remove_selected(self):
+        lm = self._selected_model()
+        if lm is None:
+            return
+        confirm = QMessageBox.question(
+            self, "Remove from list",
+            f"Remove '{lm.display_name}' from your local models list?\n\n"
+            f"The file itself will NOT be deleted:\n{lm.path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self._forget_model(lm)
+
+    def _delete_selected(self):
+        lm = self._selected_model()
+        if lm is None:
+            return
+        self._delete_model_from_disk(lm)
+
+    def _forget_model(self, lm):
+        """Remove from the app's list only. Files on disk are untouched."""
+        self._unload_from_cache(lm)
+        self.local_models = [m for m in self.local_models if m.path != lm.path]
+        self.persistence.save_local_models(self.local_models)
+        self._refresh_list()
+
+    def _delete_model_from_disk(self, lm):
+        kind_label = "GGUF file" if lm.kind == LOCAL_GGUF_KIND else "safetensors folder (and everything in it)"
+        confirm = QMessageBox.warning(
+            self, "Delete from disk",
+            f"This will PERMANENTLY delete the {kind_label} for '{lm.display_name}' from your hard drive:\n\n"
+            f"{lm.path}\n\nThis cannot be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self._unload_from_cache(lm)
+        try:
+            if lm.kind == LOCAL_GGUF_KIND:
+                if os.path.exists(lm.path):
+                    os.remove(lm.path)
+            else:
+                if os.path.isdir(lm.path):
+                    shutil.rmtree(lm.path)
+                elif os.path.exists(lm.path):
+                    os.remove(lm.path)
+        except OSError as e:
+            QMessageBox.critical(
+                self, "Delete failed",
+                f"Couldn't delete {lm.path}:\n{e}\n\n"
+                "It may be open in another program, or you may not have permission. "
+                "It has been removed from the app's list regardless -- delete the "
+                "leftover file(s) manually if needed."
+            )
+
+        self.local_models = [m for m in self.local_models if m.path != lm.path]
+        self.persistence.save_local_models(self.local_models)
+        self._refresh_list()
+
     def _show_context_menu(self, pos):
         item = self.list_widget.itemAt(pos)
         if not item:
@@ -307,7 +418,9 @@ class LocalModelsPanel(QGroupBox):
         menu = QMenu(self)
         aa = menu.addAction("Add to Chain")
         fa = menu.addAction("\u2605 Add to Favorites")
-        ra = menu.addAction("Remove from List")
+        menu.addSeparator()
+        ra = menu.addAction("Remove from List (keep file on disk)")
+        da = menu.addAction("\U0001F5D1 Delete from Disk...")
         chosen = menu.exec(self.list_widget.mapToGlobal(pos))
         if chosen == aa:
             self.add_to_chain_callback(self._build_step(lm))
@@ -317,12 +430,6 @@ class LocalModelsPanel(QGroupBox):
                 model_id=lm.path, display_name=lm.display_name,
             ))
         elif chosen == ra:
-            if lm.path in _GGUF_CACHE:
-                del _GGUF_CACHE[lm.path]
-            if lm.path in _TRANSFORMERS_CACHE:
-                del _TRANSFORMERS_CACHE[lm.path]
-            self.local_models = [m for m in self.local_models if m.path != lm.path]
-            self.persistence.save_local_models(self.local_models)
-            self._refresh_list()
-
-
+            self._forget_model(lm)
+        elif chosen == da:
+            self._delete_model_from_disk(lm)
